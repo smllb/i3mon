@@ -52,26 +52,48 @@ def setup_styles():
 def get_monitors():
     out = subprocess.check_output(["xrandr", "--query"]).decode()
     monitors = []
+    current = None
     for line in out.splitlines():
         m = re.match(
             r"^(\S+) connected (primary )?(\d+)x(\d+)\+(\d+)\+(\d+)"
             r"( (normal|left|right|inverted))?", line
         )
         if m:
+            if current is not None:
+                monitors.append(current)
             name, primary, w, h, x, y, _, rotate = m.groups()
             rotate = rotate if rotate else "normal"
             nw, nh = int(w), int(h)
             if rotate in ("left", "right"):
                 nw, nh = nh, nw
-            monitors.append(
-                {
-                    "name": name,
-                    "primary": bool(primary),
-                    "w": int(w), "h": int(h), "x": int(x), "y": int(y),
-                    "nw": nw, "nh": nh,
-                    "rotate": rotate,
-                }
-            )
+            current = {
+                "name": name,
+                "primary": bool(primary),
+                "w": int(w), "h": int(h), "x": int(x), "y": int(y),
+                "nw": nw, "nh": nh,
+                "rotate": rotate,
+                "rate": None,
+                "rates": [],
+            }
+        elif current is not None and line.startswith(" "):
+            mode = re.match(r"\s+(\d+)x(\d+)\s+(.+)$", line)
+            if not mode:
+                continue
+            mw, mh = int(mode.group(1)), int(mode.group(2))
+            if (mw, mh) == (current["nw"], current["nh"]):
+                rates = []
+                for token in mode.group(3).split():
+                    num = re.sub(r"[*+]", "", token)
+                    try:
+                        rates.append(float(num))
+                    except ValueError:
+                        continue
+                current["rates"] = sorted(set(rates), reverse=True)
+                for token in mode.group(3).split():
+                    if "*" in token:
+                        current["rate"] = float(re.sub(r"[*+]", "", token))
+    if current is not None:
+        monitors.append(current)
     return monitors
 
 
@@ -129,6 +151,7 @@ class MonitorBox:
         self.badge = None
         self.num_label = None
         self.combo = None
+        self.rate_combo = None
         self.pill = None
         self.pill_txt = None
         self.draw()
@@ -152,6 +175,16 @@ class MonitorBox:
         else:
             self.data["w"], self.data["h"] = native_w, native_h
         self.draw()
+
+    def on_rate(self, _=None):
+        sel = self.rate_combo.get()
+        if sel and sel != "auto":
+            self.data["rate"] = float(sel.split()[0])
+        else:
+            self.data["rate"] = None
+
+    def rate_label(self, r):
+        return "auto" if r is None else f"{r:g} Hz"
 
     def draw(self):
         w, h = self.size()
@@ -198,6 +231,15 @@ class MonitorBox:
             self.combo_win = self.canvas.create_window(
                 x + w / 2, y + h - 32, window=self.combo, tags="mon",
             )
+            rate_vals = ["auto"] + [f"{r:g} Hz" for r in self.data["rates"]]
+            self.rate_combo = ttk.Combobox(
+                self.canvas, values=rate_vals, state="readonly", width=10,
+            )
+            self.rate_combo.set(self.rate_label(self.data["rate"]))
+            self.rate_combo.bind("<<ComboboxSelected>>", self.on_rate)
+            self.rate_win = self.canvas.create_window(
+                x + w / 2, y + h - 60, window=self.rate_combo, tags="mon",
+            )
             pw = 58
             ph = 22
             px, py = x + w / 2 - pw / 2, y + 12
@@ -223,6 +265,8 @@ class MonitorBox:
             self.canvas.coords(self.label, x + w / 2, y + h / 2 - 12)
             self.canvas.coords(self.sub, x + w / 2, y + h / 2 + max(10, min(w, h) // 12))
             self.canvas.coords(self.combo_win, x + w / 2, y + h - 32)
+            self.canvas.coords(self.rate_win, x + w / 2, y + h - 60)
+            self.rate_combo.set(self.rate_label(self.data["rate"]))
             pw = 58
             ph = 22
             px, py = x + w / 2 - pw / 2, y + 12
@@ -449,6 +493,8 @@ class App:
         for m in self.mons:
             cmd += ["--output", m["name"], "--mode", f"{m['nw']}x{m['nh']}",
                     "--pos", f"{m['x']}x{m['y']}"]
+            if m.get("rate"):
+                cmd += ["--rate", f"{m['rate']:g}"]
             if m.get("rotate"):
                 cmd += ["--rotate", m["rotate"]]
         for m in self.mons:
@@ -471,6 +517,7 @@ class App:
                 "name": m["name"],
                 "x": int(m["x"]), "y": int(m["y"]),
                 "rotate": m.get("rotate", "normal"),
+                "rate": m.get("rate"),
                 "primary": m["primary"],
             })
         path = self.profile_path(name)
@@ -515,6 +562,7 @@ class App:
             m["w"], m["h"] = (m["nh"], m["nw"]) if rot in ("right", "left") \
                 else (m["nw"], m["nh"])
             m["primary"] = d.get("primary", False)
+            m["rate"] = d.get("rate")
         self.rescale()
         if not silent:
             self.status.config(text=f"loaded → {path}")
@@ -583,6 +631,8 @@ def apply_profile(mons, path):
             continue
         cmd += ["--output", m["name"], "--mode", f"{m['nw']}x{m['nh']}",
                 "--pos", f"{d['x']}x{d['y']}"]
+        if d.get("rate"):
+            cmd += ["--rate", f"{d['rate']:g}"]
         rot = d.get("rotate", "normal")
         if rot != "normal":
             cmd += ["--rotate", rot]

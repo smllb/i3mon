@@ -79,6 +79,10 @@ def get_monitors():
             mode = re.match(r"\s+(\d+)x(\d+)\s+(.+)$", line)
             if not mode:
                 continue
+            if not re.fullmatch(r"[\d.*+]+(\s+[\d.*+]+)*\s*", mode.group(3)):
+                continue
+            if not mode:
+                continue
             mw, mh = int(mode.group(1)), int(mode.group(2))
             if (mw, mh) == (current["nw"], current["nh"]):
                 rates = []

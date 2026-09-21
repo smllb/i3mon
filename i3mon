@@ -1,0 +1,595 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import subprocess
+import sys
+import tkinter as tk
+from tkinter import font as tkfont
+from tkinter import ttk
+
+
+COL_BG = "#0d1017"
+COL_CANVAS = "#161a22"
+COL_CARD = "#1f242e"
+COL_CARD_ALT = "#262c38"
+COL_ACCENT = "#4f8cff"
+COL_ACCENT_DIM = "#2b3a5e"
+COL_OK = "#35d07f"
+COL_WARN = "#ffb84d"
+COL_TEXT = "#e6e9ef"
+COL_MUTED = "#8a93a3"
+COL_SELECT = "#ffffff"
+
+
+def setup_styles():
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure("TFrame", background=COL_BG)
+    style.configure("Bar.TFrame", background=COL_BG)
+    style.configure("TButton", background=COL_CARD, foreground=COL_TEXT,
+                    bordercolor="#2c323e", lightcolor="#2c323e",
+                    darkcolor="#2c323e", padding=(14, 7), relief="flat")
+    style.map("TButton",
+              background=[("active", "#2c3648"), ("pressed", "#333f55")])
+    style.configure("Accent.TButton", background=COL_ACCENT,
+                    foreground="#0d1017", padding=(18, 8), font=("Sans", 10, "bold"))
+    style.map("Accent.TButton",
+              background=[("active", "#6ba0ff"), ("pressed", "#3d77e6")])
+    style.configure("TCheckbutton", background=COL_BG, foreground=COL_TEXT)
+    style.map("TCheckbutton", background=[("active", COL_BG)])
+    style.configure("TCombobox", fieldbackground=COL_CARD,
+                    background=COL_CARD, foreground=COL_TEXT,
+                    arrowcolor=COL_MUTED, bordercolor="#2c323e",
+                    lightcolor="#2c323e", darkcolor="#2c323e",
+                    padding=(8, 5))
+    style.map("TCombobox", fieldbackground=[("readonly", COL_CARD)])
+    style.configure("TEntry", fieldbackground=COL_CARD, foreground=COL_TEXT,
+                    bordercolor="#2c323e", insertcolor=COL_TEXT)
+    style.configure("TLabel", background=COL_BG, foreground=COL_MUTED)
+
+
+def get_monitors():
+    out = subprocess.check_output(["xrandr", "--query"]).decode()
+    monitors = []
+    for line in out.splitlines():
+        m = re.match(
+            r"^(\S+) connected (primary )?(\d+)x(\d+)\+(\d+)\+(\d+)"
+            r"( (normal|left|right|inverted))?", line
+        )
+        if m:
+            name, primary, w, h, x, y, _, rotate = m.groups()
+            rotate = rotate if rotate else "normal"
+            nw, nh = int(w), int(h)
+            if rotate in ("left", "right"):
+                nw, nh = nh, nw
+            monitors.append(
+                {
+                    "name": name,
+                    "primary": bool(primary),
+                    "w": int(w), "h": int(h), "x": int(x), "y": int(y),
+                    "nw": nw, "nh": nh,
+                    "rotate": rotate,
+                }
+            )
+    return monitors
+
+
+def flash(mon, text, sub=None):
+    import tkinter as tk
+    from tkinter import font as tkfont
+    top = tk.Toplevel()
+    top.overrideredirect(True)
+    top.attributes("-topmost", True)
+    top.configure(bg="black")
+    fsize = 280 if len(text) <= 1 else 90
+    if sub:
+        frame = tk.Frame(top, bg="black")
+        frame.pack(expand=True)
+        tk.Label(frame, text=text, bg="black", fg=COL_ACCENT,
+                 font=tkfont.Font(size=fsize, weight="bold")).pack()
+        tk.Label(frame, text=sub, bg="black", fg=COL_TEXT,
+                 font=tkfont.Font(size=40, weight="bold")).pack(pady=16)
+    else:
+        lab = tk.Label(top, text=text, bg="black", fg=COL_ACCENT,
+                       font=tkfont.Font(size=fsize, weight="bold"))
+        lab.pack(expand=True, fill="both")
+    w = max(520, len(text) * fsize // 2 + 80)
+    h = max(520, fsize + 120)
+    x = mon["x"] + mon["w"] // 2 - w // 2
+    y = mon["y"] + mon["h"] // 2 - h // 2
+    top.geometry(f"{w}x{h}+{x}+{y}")
+    top.after(2000, top.destroy)
+
+
+ROTATION_LABELS = {
+    "normal": "Landscape",
+    "right": "Portrait",
+    "inverted": "Landscape (flipped)",
+    "left": "Portrait (flipped)",
+}
+ROTATION_VALUES = {
+    "Landscape": "normal",
+    "Portrait": "right",
+    "Landscape (flipped)": "inverted",
+    "Portrait (flipped)": "left",
+}
+
+
+class MonitorBox:
+    def __init__(self, canvas, data, scale, app=None, num=None):
+        self.canvas = canvas
+        self.data = data
+        self.scale = scale
+        self.app = app
+        self.num = num
+        self.item = None
+        self.label = None
+        self.sub = None
+        self.badge = None
+        self.num_label = None
+        self.combo = None
+        self.pill = None
+        self.pill_txt = None
+        self.draw()
+
+    def pos(self):
+        return self.data["x"], self.data["y"]
+
+    def size(self):
+        return int(self.data["w"] * self.scale), int(self.data["h"] * self.scale)
+
+    def on_orient(self, _=None):
+        cur = self.data.get("rotate", "normal")
+        nxt = ROTATION_VALUES[self.combo.get()]
+        if nxt == "normal":
+            self.data.pop("rotate", None)
+        else:
+            self.data["rotate"] = nxt
+        native_w, native_h = self.data["nw"], self.data["nh"]
+        if nxt in ("right", "left"):
+            self.data["w"], self.data["h"] = native_h, native_w
+        else:
+            self.data["w"], self.data["h"] = native_w, native_h
+        self.draw()
+
+    def draw(self):
+        w, h = self.size()
+        x, y = self.data["x"] * self.scale, self.data["y"] * self.scale
+        fill = COL_CARD
+        if self.data.get("selected"):
+            fill = COL_CARD_ALT
+        if self.item is None:
+            self.item = self.canvas.create_rectangle(
+                x + 2, y + 2, x + w - 2, y + h - 2,
+                outline=COL_ACCENT_DIM, width=2,
+                fill=fill, tags="mon",
+            )
+            self.badge = self.canvas.create_oval(
+                x + 8, y + 8, x + 8 + 12, y + 8 + 12,
+                fill=self.dot_color(), outline="", tags="mon",
+            )
+            self.num_label = self.canvas.create_text(
+                x + 30, y + 26, text=str(self.num) if self.num else "",
+                fill=COL_TEXT, anchor="nw",
+                font=tkfont.Font(size=max(10, min(w, h) // 10), weight="bold"),
+                tags="mon",
+            )
+            self.label = self.canvas.create_text(
+                x + w / 2, y + h / 2 - 12,
+                text=self.data["name"], fill=COL_TEXT,
+                font=tkfont.Font(size=max(8, min(w, h) // 6), weight="bold"),
+                tags="mon",
+            )
+            self.sub = self.canvas.create_text(
+                x + w / 2, y + h / 2 + max(10, min(w, h) // 12),
+                text=f"{self.data['w']}×{self.data['h']}",
+                fill=COL_MUTED,
+                font=tkfont.Font(size=max(7, min(w, h) // 14)),
+                tags="mon",
+            )
+            self.combo = ttk.Combobox(
+                self.canvas, values=("Landscape", "Portrait",
+                                     "Landscape (flipped)", "Portrait (flipped)"),
+                state="readonly", width=16,
+            )
+            self.combo.set(ROTATION_LABELS[self.data.get("rotate", "normal")])
+            self.combo.bind("<<ComboboxSelected>>", self.on_orient)
+            self.combo_win = self.canvas.create_window(
+                x + w / 2, y + h - 32, window=self.combo, tags="mon",
+            )
+            pw = 58
+            ph = 22
+            px, py = x + w / 2 - pw / 2, y + 12
+            pill_on = self.data.get("primary", False)
+            self.pill = self.canvas.create_rectangle(
+                px, py, px + pw, py + ph,
+                fill=COL_OK if pill_on else COL_CARD,
+                outline="#3a4150", width=1, tags="mon mainpill",
+            )
+            self.pill_txt = self.canvas.create_text(
+                x + w / 2, py + ph / 2, text="main",
+                fill="#0d1017" if pill_on else COL_MUTED,
+                font=tkfont.Font(size=9, weight="bold"),
+                tags="mon mainpill",
+            )
+        else:
+            self.canvas.itemconfig(self.item, fill=fill)
+            self.canvas.coords(self.item, x + 2, y + 2, x + w - 2, y + h - 2)
+            self.canvas.coords(self.badge, x + 8, y + 8, x + 20, y + 20)
+            self.canvas.itemconfig(self.badge, fill=self.dot_color())
+            self.canvas.coords(self.num_label, x + 30, y + 26)
+            self.canvas.itemconfig(self.num_label, text=str(self.num) if self.num else "")
+            self.canvas.coords(self.label, x + w / 2, y + h / 2 - 12)
+            self.canvas.coords(self.sub, x + w / 2, y + h / 2 + max(10, min(w, h) // 12))
+            self.canvas.coords(self.combo_win, x + w / 2, y + h - 32)
+            pw = 58
+            ph = 22
+            px, py = x + w / 2 - pw / 2, y + 12
+            pill_on = self.data.get("primary", False)
+            self.canvas.coords(self.pill, px, py, px + pw, py + ph)
+            self.canvas.itemconfig(
+                self.pill, fill=COL_OK if pill_on else COL_CARD)
+            self.canvas.coords(self.pill_txt, x + w / 2, py + ph / 2)
+            self.canvas.itemconfig(
+                self.pill_txt, text="main",
+                fill="#0d1017" if pill_on else COL_MUTED)
+            self.canvas.itemconfig(self.sub,
+                                   text=f"{self.data['w']}×{self.data['h']}")
+            self.combo.set(ROTATION_LABELS[self.data.get("rotate", "normal")])
+
+    def dot_color(self):
+        if self.data.get("primary"):
+            return COL_OK
+        if self.data.get("rotate"):
+            return COL_WARN
+        return COL_ACCENT_DIM
+
+    def set_num(self, num):
+        self.num = num
+        if self.num_label is not None:
+            self.canvas.itemconfig(self.num_label, text=str(num))
+
+    def toggle_primary(self):
+        if self.app is None:
+            return
+        if not self.data.get("primary"):
+            for box in self.app.boxes:
+                box.data["primary"] = box is self
+        else:
+            self.data["primary"] = False
+        self.app.rescale()
+
+
+class App:
+    def __init__(self, root, monitors):
+        self.root = root
+        self.mons = monitors
+        self.scale = 0.5
+        self.drag = None
+        self.selected = None
+
+        root.title("i3mon")
+        root.configure(bg=COL_BG)
+        root.geometry("940x340")
+
+        header = tk.Frame(root, bg=COL_BG)
+        header.pack(fill="x", padx=16, pady=(12, 4))
+        tk.Label(header, text="i3mon", bg=COL_BG, fg=COL_TEXT,
+                 font=tkfont.Font(size=13, weight="bold")).pack(side="left")
+        tk.Label(header, text="drag to position · click to select",
+                 bg=COL_BG, fg=COL_MUTED, font=tkfont.Font(size=9)
+                 ).pack(side="right")
+
+        self.canvas = tk.Canvas(root, width=400, height=300,
+                                bg=COL_CANVAS, highlightthickness=0,
+                                bd=0, relief="flat")
+        self.canvas.pack(fill="both", expand=True, padx=16, pady=4)
+        self.canvas.bind("<Configure>", lambda e: self.rescale())
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<Button-3>", self.on_identify)
+
+        bar = ttk.Frame(root, style="Bar.TFrame")
+        bar.pack(fill="x", side="bottom", padx=12, pady=(2, 12))
+
+        self.btn_apply = ttk.Button(bar, text="Apply",
+                                    command=self.apply, style="Accent.TButton")
+        self.btn_apply.pack(side="left", padx=(4, 4), pady=6)
+        self.btn_identify = ttk.Button(bar, text="Identify",
+                                       command=self.identify_all)
+        self.btn_identify.pack(side="left", padx=4, pady=6)
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
+                                                   padx=8, pady=6)
+        self.profile_var = tk.StringVar()
+        self.profile_entry = ttk.Combobox(
+            bar, textvariable=self.profile_var, values=self.list_profiles(),
+            width=14,
+        )
+        self.profile_entry.pack(side="left", padx=4, pady=6)
+        self.btn_save = ttk.Button(bar, text="Save", command=self.save)
+        self.btn_save.pack(side="left", padx=4, pady=6)
+        self.btn_load = ttk.Button(bar, text="Load", command=self.load)
+        self.btn_load.pack(side="left", padx=4, pady=6)
+        self.status = tk.Label(bar, text="", bg=COL_BG, fg=COL_MUTED,
+                               font=tkfont.Font(size=9))
+        self.status.pack(side="left", padx=12, pady=6)
+        hint = tk.Label(bar, text="right-click to flash",
+                        bg=COL_BG, fg=COL_MUTED, font=tkfont.Font(size=9))
+        hint.pack(side="right", padx=8, pady=6)
+
+        self.boxes = []
+        for m in monitors:
+            self.boxes.append(MonitorBox(self.canvas, m, self.scale, app=self))
+        self._reassign_nums()
+
+        self.root.after(150, self.load_saved)
+
+    def _reassign_nums(self):
+        order = sorted(self.mons, key=lambda mm: (mm["x"], mm["y"]))
+        for box in self.boxes:
+            box.set_num(order.index(box.data) + 1)
+
+    def load_saved(self):
+        if self.list_profiles():
+            self.load(silent=True)
+
+    def rescale(self):
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if cw < 10 or ch < 10:
+            return
+        total_w = max(m["x"] + m["w"] for m in self.mons)
+        total_h = max(m["y"] + m["h"] for m in self.mons)
+        self.scale = min((cw - 20) / total_w, (ch - 20) / total_h)
+        self.canvas.delete("mon")
+        self.boxes = []
+        for m in self.mons:
+            self.boxes.append(MonitorBox(self.canvas, m, self.scale, app=self))
+        self._reassign_nums()
+
+    def find_box(self, event):
+        x, y = event.x, event.y
+        for box in self.boxes:
+            w, h = box.size()
+            bx, by = box.pos()
+            bx, by = bx * self.scale, by * self.scale
+            if bx <= x <= bx + w and by <= y <= by + h:
+                return box
+        return None
+
+    def on_press(self, event):
+        items = self.canvas.find_overlapping(
+            event.x - 1, event.y - 1, event.x + 1, event.y + 1)
+        for it in items:
+            if "mainpill" in self.canvas.gettags(it):
+                for box in self.boxes:
+                    if box.pill == it or box.pill_txt == it:
+                        box.toggle_primary()
+                        return
+        box = self.find_box(event)
+        if box:
+            self.drag = (box, event.x - box.pos()[0] * self.scale,
+                         event.y - box.pos()[1] * self.scale)
+            if self.selected:
+                self.selected.data["selected"] = False
+                self.selected.draw()
+            self.selected = box
+            box.data["selected"] = True
+            box.draw()
+
+    def on_drag(self, event):
+        if not self.drag:
+            return
+        box, offx, offy = self.drag
+        nx = (event.x - offx) / self.scale
+        ny = (event.y - offy) / self.scale
+        box.data["x"], box.data["y"] = self.snap(box, int(max(0, nx)), int(max(0, ny)))
+        box.draw()
+
+    def snap(self, box, x, y):
+        snap_x = [0]
+        snap_y = [0]
+        for other in self.mons:
+            if other is box.data:
+                continue
+            snap_x += [other["x"], other["x"] + other["w"],
+                       other["x"] + other["w"] // 2 - box.data["w"] // 2]
+            snap_y += [other["y"], other["y"] + other["h"],
+                       other["y"] + other["h"] // 2 - box.data["h"] // 2]
+        tol = 40
+        for t in snap_x:
+            if abs(x - t) < tol:
+                x = t
+                break
+        for t in snap_y:
+            if abs(y - t) < tol:
+                y = t
+                break
+        return x, y
+
+    def on_release(self, _):
+        self.drag = None
+        self._reassign_nums()
+
+    def pos_num(self, m):
+        order = sorted(self.mons, key=lambda mm: (mm["x"], mm["y"]))
+        return order.index(m) + 1
+
+    def on_identify(self, event):
+        box = self.find_box(event)
+        if box:
+            m = box.data
+            flash(m, m["name"], f"#{self.pos_num(m)}")
+
+    def identify_all(self):
+        for box in self.boxes:
+            m = box.data
+            flash(m, str(self.pos_num(m)), m["name"])
+
+    PROFILE_DIR = os.path.expanduser("~/.config/i3mon")
+
+    def profile_path(self, name=None):
+        name = (name or self.profile_var.get()).strip()
+        return os.path.join(self.PROFILE_DIR, f"{name}.json")
+
+    def list_profiles(self):
+        try:
+            return sorted(
+                f[:-5] for f in os.listdir(self.PROFILE_DIR) if f.endswith(".json")
+            )
+        except FileNotFoundError:
+            return []
+
+    def apply(self):
+        for m in self.mons:
+            m["x"], m["y"] = int(m["x"]), int(m["y"])
+        cmd = ["xrandr"]
+        for m in self.mons:
+            cmd += ["--output", m["name"], "--mode", f"{m['nw']}x{m['nh']}",
+                    "--pos", f"{m['x']}x{m['y']}"]
+            if m.get("rotate"):
+                cmd += ["--rotate", m["rotate"]]
+        for m in self.mons:
+            if m["primary"]:
+                cmd += ["--output", m["name"], "--primary"]
+        try:
+            subprocess.check_call(cmd)
+            self.status.config(text="applied ✓")
+        except subprocess.CalledProcessError as e:
+            self.status.config(text=f"error: {e}")
+
+    def save(self):
+        name = self.profile_var.get().strip()
+        if not name:
+            self.status.config(text="enter a profile name first")
+            return
+        data = []
+        for m in self.mons:
+            data.append({
+                "name": m["name"],
+                "x": int(m["x"]), "y": int(m["y"]),
+                "rotate": m.get("rotate", "normal"),
+                "primary": m["primary"],
+            })
+        path = self.profile_path(name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+        self.profile_entry["values"] = self.list_profiles()
+        self.status.config(text=f"saved → {path}")
+
+    def load(self, silent=False):
+        name = (self.profile_var.get() if not silent else None) or None
+        if not silent and not name.strip():
+            self.status.config(text="pick a profile to load")
+            return
+        candidates = [self.profile_path(name)] if name else [
+            os.path.join(self.PROFILE_DIR, f) for f in self.list_profiles()
+        ]
+        path = next((p for p in candidates if os.path.exists(p)), None)
+        if path is None:
+            if not silent:
+                self.status.config(text=f"profile not found: {name}")
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError,) as e:
+            self.status.config(text=f"load failed: {e}")
+            return
+        if not silent:
+            self.profile_var.set(os.path.splitext(os.path.basename(path))[0])
+        by_name = {m["name"]: m for m in self.mons}
+        for d in data:
+            m = by_name.get(d["name"])
+            if not m:
+                continue
+            m["x"], m["y"] = d["x"], d["y"]
+            rot = d.get("rotate", "normal")
+            if rot == "normal":
+                m.pop("rotate", None)
+            else:
+                m["rotate"] = rot
+            m["w"], m["h"] = (m["nh"], m["nw"]) if rot in ("right", "left") \
+                else (m["nw"], m["nh"])
+            m["primary"] = d.get("primary", False)
+        self.rescale()
+        if not silent:
+            self.status.config(text=f"loaded → {path}")
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="i3mon",
+        description="Arrange, rotate, save and apply monitor layouts (i3).",
+    )
+    parser.add_argument("profile", nargs="?", default=None,
+                        help="profile name to load on start (default: last used)")
+    parser.add_argument("--apply", action="store_true",
+                        help="apply the profile to the live display and exit")
+    parser.add_argument("--list", action="store_true",
+                        help="list available profiles and exit")
+    args = parser.parse_args()
+
+    mons = get_monitors()
+    if not mons:
+        print("no connected monitors found", file=sys.stderr)
+        return 1
+
+    profiles = [
+        f[:-5] for f in os.listdir(App.PROFILE_DIR) if f.endswith(".json")
+    ] if os.path.isdir(App.PROFILE_DIR) else []
+    profiles.sort()
+
+    if args.list:
+        print("\n".join(profiles) if profiles else "(no profiles saved)")
+        return 0
+
+    if args.profile and args.profile not in profiles:
+        print(f"profile not found: {args.profile}", file=sys.stderr)
+        return 1
+
+    if args.apply:
+        if not args.profile:
+            print("--apply requires a profile name", file=sys.stderr)
+            return 1
+        path = os.path.join(App.PROFILE_DIR, f"{args.profile}.json")
+        apply_profile(mons, path)
+        print(f"applied: {args.profile}")
+        return 0
+
+    root = tk.Tk()
+    setup_styles()
+    app = App(root, mons)
+    if args.profile:
+        app.profile_var.set(args.profile)
+        app.load()
+    root.mainloop()
+    return 0
+
+
+def apply_profile(mons, path):
+    with open(path) as f:
+        data = json.load(f)
+    by_name = {m["name"]: m for m in mons}
+    cmd = ["xrandr"]
+    for d in data:
+        m = by_name.get(d["name"])
+        if not m:
+            continue
+        cmd += ["--output", m["name"], "--mode", f"{m['nw']}x{m['nh']}",
+                "--pos", f"{d['x']}x{d['y']}"]
+        rot = d.get("rotate", "normal")
+        if rot != "normal":
+            cmd += ["--rotate", rot]
+        if d.get("primary"):
+            cmd += ["--primary"]
+    subprocess.check_call(cmd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

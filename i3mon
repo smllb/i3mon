@@ -78,6 +78,7 @@ def get_monitors():
                     "rates": [],
                     "geo": True,
                     "active": True,
+                    "enabled": True,
                 }
             else:
                 name, primary, _ = m_plain.groups()
@@ -91,6 +92,7 @@ def get_monitors():
                     "rates": [],
                     "geo": False,
                     "active": False,
+                    "enabled": False,
                 }
         elif current is not None and line.startswith(" "):
             mode = re.match(r"\s+(\d+)x(\d+)\s+(.+)$", line)
@@ -668,7 +670,7 @@ class App:
                 else (m["nw"], m["nh"])
             m["primary"] = d.get("primary", False)
             m["rate"] = d.get("rate")
-            m["enabled"] = d.get("enabled", True)
+            m["enabled"] = d.get("enabled", m.get("enabled", True))
         self.rescale()
         if not silent:
             self.status.config(text=f"loaded → {path}")

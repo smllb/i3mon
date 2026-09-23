@@ -58,46 +58,79 @@ def get_monitors():
             r"^(\S+) connected (primary )?(\d+)x(\d+)\+(\d+)\+(\d+)"
             r"( (normal|left|right|inverted))?", line
         )
-        if m:
+        m_plain = re.match(r"^(\S+) connected (primary )?\((.+)\)\s*$", line)
+        if m or m_plain:
             if current is not None:
                 monitors.append(current)
-            name, primary, w, h, x, y, _, rotate = m.groups()
-            rotate = rotate if rotate else "normal"
-            nw, nh = int(w), int(h)
-            if rotate in ("left", "right"):
-                nw, nh = nh, nw
-            current = {
-                "name": name,
-                "primary": bool(primary),
-                "w": int(w), "h": int(h), "x": int(x), "y": int(y),
-                "nw": nw, "nh": nh,
-                "rotate": rotate,
-                "rate": None,
-                "rates": [],
-            }
+            if m:
+                name, primary, w, h, x, y, _, rotate = m.groups()
+                rotate = rotate if rotate else "normal"
+                nw, nh = int(w), int(h)
+                if rotate in ("left", "right"):
+                    nw, nh = nh, nw
+                current = {
+                    "name": name,
+                    "primary": bool(primary),
+                    "w": int(w), "h": int(h), "x": int(x), "y": int(y),
+                    "nw": nw, "nh": nh,
+                    "rotate": rotate,
+                    "rate": None,
+                    "rates": [],
+                    "geo": True,
+                    "active": True,
+                }
+            else:
+                name, primary, _ = m_plain.groups()
+                current = {
+                    "name": name,
+                    "primary": bool(primary),
+                    "w": 0, "h": 0, "x": 0, "y": 0,
+                    "nw": 0, "nh": 0,
+                    "rotate": "normal",
+                    "rate": None,
+                    "rates": [],
+                    "geo": False,
+                    "active": False,
+                }
         elif current is not None and line.startswith(" "):
             mode = re.match(r"\s+(\d+)x(\d+)\s+(.+)$", line)
             if not mode:
                 continue
             if not re.fullmatch(r"[\d.*+]+(\s+[\d.*+]+)*\s*", mode.group(3)):
                 continue
-            if not mode:
-                continue
             mw, mh = int(mode.group(1)), int(mode.group(2))
-            if (mw, mh) == (current["nw"], current["nh"]):
-                rates = []
-                for token in mode.group(3).split():
-                    num = re.sub(r"[*+]", "", token)
-                    try:
-                        rates.append(float(num))
-                    except ValueError:
-                        continue
+            tokens = mode.group(3).split()
+            rates = []
+            for token in tokens:
+                num = re.sub(r"[*+]", "", token)
+                try:
+                    rates.append(float(num))
+                except ValueError:
+                    continue
+            if not current["geo"]:
+                if "+" in mode.group(3):
+                    current["nw"], current["nh"] = mw, mh
+                    current["w"], current["h"] = mw, mh
+                    current["rates"] = sorted(set(rates), reverse=True)
+                    for token in tokens:
+                        if "*" in token:
+                            current["rate"] = float(re.sub(r"[*+]", "", token))
+                    current["geo"] = True
+            elif (mw, mh) == (current["nw"], current["nh"]):
                 current["rates"] = sorted(set(rates), reverse=True)
-                for token in mode.group(3).split():
+                for token in tokens:
                     if "*" in token:
                         current["rate"] = float(re.sub(r"[*+]", "", token))
     if current is not None:
         monitors.append(current)
+
+    right = max((m["x"] + m["w"] for m in monitors), default=0)
+    for m in monitors:
+        if not m["active"]:
+            m["x"], m["y"] = right, 0
+            right += m["w"]
+            m["geo"] = True
+            m["active"] = True
     return monitors
 
 
@@ -158,6 +191,8 @@ class MonitorBox:
         self.rate_combo = None
         self.pill = None
         self.pill_txt = None
+        self.pow = None
+        self.pow_txt = None
         self.draw()
 
     def pos(self):
@@ -193,13 +228,16 @@ class MonitorBox:
     def draw(self):
         w, h = self.size()
         x, y = self.data["x"] * self.scale, self.data["y"] * self.scale
+        enabled = self.data.get("enabled", True)
         fill = COL_CARD
         if self.data.get("selected"):
             fill = COL_CARD_ALT
+        if not enabled:
+            fill = "#181c24"
         if self.item is None:
             self.item = self.canvas.create_rectangle(
                 x + 2, y + 2, x + w - 2, y + h - 2,
-                outline=COL_ACCENT_DIM, width=2,
+                outline=COL_ACCENT_DIM if enabled else "#2a3040", width=2,
                 fill=fill, tags="mon",
             )
             self.badge = self.canvas.create_oval(
@@ -246,7 +284,7 @@ class MonitorBox:
             )
             pw = 58
             ph = 22
-            px, py = x + w / 2 - pw / 2, y + 12
+            px, py = x + w / 2 + 4, y + 12
             pill_on = self.data.get("primary", False)
             self.pill = self.canvas.create_rectangle(
                 px, py, px + pw, py + ph,
@@ -254,13 +292,28 @@ class MonitorBox:
                 outline="#3a4150", width=1, tags="mon mainpill",
             )
             self.pill_txt = self.canvas.create_text(
-                x + w / 2, py + ph / 2, text="main",
+                px + pw / 2, py + ph / 2, text="main",
                 fill="#0d1017" if pill_on else COL_MUTED,
                 font=tkfont.Font(size=9, weight="bold"),
                 tags="mon mainpill",
             )
+            ppx = x + w / 2 - 4 - pw
+            on = self.data.get("enabled", True)
+            self.pow = self.canvas.create_rectangle(
+                ppx, py, ppx + pw, py + ph,
+                fill="#2f7a55" if on else COL_WARN,
+                outline="#3a4150", width=1, tags="mon powerpill",
+            )
+            self.pow_txt = self.canvas.create_text(
+                ppx + pw / 2, py + ph / 2, text="on" if on else "off",
+                fill="#0d1017" if on else COL_BG,
+                font=tkfont.Font(size=9, weight="bold"),
+                tags="mon powerpill",
+            )
         else:
             self.canvas.itemconfig(self.item, fill=fill)
+            self.canvas.itemconfig(
+                self.item, outline=COL_ACCENT_DIM if enabled else "#2a3040")
             self.canvas.coords(self.item, x + 2, y + 2, x + w - 2, y + h - 2)
             self.canvas.coords(self.badge, x + 8, y + 8, x + 20, y + 20)
             self.canvas.itemconfig(self.badge, fill=self.dot_color())
@@ -273,15 +326,24 @@ class MonitorBox:
             self.rate_combo.set(self.rate_label(self.data["rate"]))
             pw = 58
             ph = 22
-            px, py = x + w / 2 - pw / 2, y + 12
+            px, py = x + w / 2 + 4, y + 12
             pill_on = self.data.get("primary", False)
             self.canvas.coords(self.pill, px, py, px + pw, py + ph)
             self.canvas.itemconfig(
                 self.pill, fill=COL_OK if pill_on else COL_CARD)
-            self.canvas.coords(self.pill_txt, x + w / 2, py + ph / 2)
+            self.canvas.coords(self.pill_txt, px + pw / 2, py + ph / 2)
             self.canvas.itemconfig(
                 self.pill_txt, text="main",
                 fill="#0d1017" if pill_on else COL_MUTED)
+            ppx = x + w / 2 - 4 - pw
+            on = self.data.get("enabled", True)
+            self.canvas.coords(self.pow, ppx, py, ppx + pw, py + ph)
+            self.canvas.itemconfig(
+                self.pow, fill="#2f7a55" if on else COL_WARN)
+            self.canvas.coords(self.pow_txt, ppx + pw / 2, py + ph / 2)
+            self.canvas.itemconfig(
+                self.pow_txt, text="on" if on else "off",
+                fill="#0d1017" if on else COL_BG)
             self.canvas.itemconfig(self.sub,
                                    text=f"{self.data['w']}×{self.data['h']}")
             self.combo.set(ROTATION_LABELS[self.data.get("rotate", "normal")])
@@ -307,6 +369,12 @@ class MonitorBox:
         else:
             self.data["primary"] = False
         self.app.rescale()
+
+    def toggle_power(self):
+        if self.app is None:
+            return
+        self.data["enabled"] = not self.data.get("enabled", True)
+        self.draw()
 
 
 class App:
@@ -348,6 +416,9 @@ class App:
         self.btn_identify = ttk.Button(bar, text="Identify",
                                        command=self.identify_all)
         self.btn_identify.pack(side="left", padx=4, pady=6)
+        self.btn_redetect = ttk.Button(bar, text="Redetect",
+                                       command=self.redetect)
+        self.btn_redetect.pack(side="left", padx=4, pady=6)
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                    padx=8, pady=6)
         self.profile_var = tk.StringVar()
@@ -383,6 +454,27 @@ class App:
         if self.list_profiles():
             self.load(silent=True)
 
+    def redetect(self):
+        fresh = {m["name"]: m for m in get_monitors()}
+        for old in self.mons:
+            new = fresh.get(old["name"])
+            if not new:
+                continue
+            new["x"], new["y"] = old["x"], old["y"]
+            new["primary"] = old["primary"]
+            new["enabled"] = old.get("enabled", True)
+            if old.get("rotate"):
+                new["rotate"] = old["rotate"]
+                new["w"], new["h"] = (new["nh"], new["nw"]) if old["rotate"] in (
+                    "right", "left") else (new["nw"], new["nh"])
+            if old.get("rate"):
+                new["rate"] = old["rate"]
+        self.mons = [fresh[m["name"]] for m in self.mons if m["name"] in fresh]
+        self.mons = self.mons + [m for m in fresh.values()
+                                 if m["name"] not in {x["name"] for x in self.mons}]
+        self.rescale()
+        self.status.config(text=f"redetected: {len(self.mons)} monitors")
+
     def rescale(self):
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
@@ -415,6 +507,11 @@ class App:
                 for box in self.boxes:
                     if box.pill == it or box.pill_txt == it:
                         box.toggle_primary()
+                        return
+            if "powerpill" in self.canvas.gettags(it):
+                for box in self.boxes:
+                    if box.pow == it or box.pow_txt == it:
+                        box.toggle_power()
                         return
         box = self.find_box(event)
         if box:
@@ -495,6 +592,9 @@ class App:
             m["x"], m["y"] = int(m["x"]), int(m["y"])
         cmd = ["xrandr"]
         for m in self.mons:
+            if not m.get("enabled", True):
+                cmd += ["--output", m["name"], "--off"]
+                continue
             cmd += ["--output", m["name"], "--mode", f"{m['nw']}x{m['nh']}",
                     "--pos", f"{m['x']}x{m['y']}"]
             if m.get("rate"):
@@ -522,6 +622,7 @@ class App:
                 "x": int(m["x"]), "y": int(m["y"]),
                 "rotate": m.get("rotate", "normal"),
                 "rate": m.get("rate"),
+                "enabled": m.get("enabled", True),
                 "primary": m["primary"],
             })
         path = self.profile_path(name)
@@ -567,6 +668,7 @@ class App:
                 else (m["nw"], m["nh"])
             m["primary"] = d.get("primary", False)
             m["rate"] = d.get("rate")
+            m["enabled"] = d.get("enabled", True)
         self.rescale()
         if not silent:
             self.status.config(text=f"loaded → {path}")
@@ -632,6 +734,9 @@ def apply_profile(mons, path):
     for d in data:
         m = by_name.get(d["name"])
         if not m:
+            continue
+        if not d.get("enabled", True):
+            cmd += ["--output", m["name"], "--off"]
             continue
         cmd += ["--output", m["name"], "--mode", f"{m['nw']}x{m['nh']}",
                 "--pos", f"{d['x']}x{d['y']}"]

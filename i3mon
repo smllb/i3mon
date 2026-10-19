@@ -20,6 +20,8 @@ COL_WARN = "#ffb84d"
 COL_TEXT = "#e6e9ef"
 COL_MUTED = "#8a93a3"
 COL_SELECT = "#ffffff"
+MIRROR_COLORS = ("#ffb84d", "#c792ea", "#7fdbca", "#ff7b72",
+                 "#79c0ff", "#d2a8ff", "#f2cc60", "#ff9e64")
 
 
 def setup_styles():
@@ -156,9 +158,9 @@ def flash(mon, text, sub=None):
                        font=tkfont.Font(size=fsize, weight="bold"))
         lab.pack(expand=True, fill="both")
     w = max(520, len(text) * fsize // 2 + 80)
-    h = max(520, fsize + 120)
-    x = mon["x"] + mon["w"] // 2 - w // 2
-    y = mon["y"] + mon["h"] // 2 - h // 2
+    h = m11ax(520, fsize + 120)
+    x = mon["x"] + mon.get("_ox", 0) + mon["w"] // 2 - w // 2
+    y = mon["y"] + mon.get("_oy", 0) + mon["h"] // 2 - h // 2
     top.geometry(f"{w}x{h}+{x}+{y}")
     top.after(2000, top.destroy)
 
@@ -195,10 +197,12 @@ class MonitorBox:
         self.pill_txt = None
         self.pow = None
         self.pow_txt = None
+        self.mirror_lbl = None
         self.draw()
 
     def pos(self):
-        return self.data["x"], self.data["y"]
+        return (self.data["x"] + self.data.get("_ox", 0),
+                self.data["y"] + self.data.get("_oy", 0))
 
     def size(self):
         return int(self.data["w"] * self.scale), int(self.data["h"] * self.scale)
@@ -227,9 +231,23 @@ class MonitorBox:
     def rate_label(self, r):
         return "auto" if r is None else f"{r:g} Hz"
 
+    def sub_text(self):
+        return f"{self.data['w']}×{self.data['h']}"
+
+    def outline_color(self, enabled):
+        if self.data.get("_mirror"):
+            return self.data.get("_mcolor") or COL_WARN
+        return COL_ACCENT_DIM if enabled else "#2a3040"
+
+    def mirror_text(self):
+        return f"⧉ mirror {self.data.get('_mgid', 1)}"
+
     def draw(self):
         w, h = self.size()
-        x, y = self.data["x"] * self.scale, self.data["y"] * self.scale
+        px = self.app.pan_x if self.app else 0
+        py = self.app.pan_y if self.app else 0
+        x = (self.data["x"] + self.data.get("_ox", 0)) * self.scale + px
+        y = (self.data["y"] + self.data.get("_oy", 0)) * self.scale + py
         enabled = self.data.get("enabled", True)
         fill = COL_CARD
         if self.data.get("selected"):
@@ -239,7 +257,7 @@ class MonitorBox:
         if self.item is None:
             self.item = self.canvas.create_rectangle(
                 x + 2, y + 2, x + w - 2, y + h - 2,
-                outline=COL_ACCENT_DIM if enabled else "#2a3040", width=2,
+                outline=self.outline_color(enabled), width=2,
                 fill=fill, tags="mon",
             )
             self.badge = self.canvas.create_oval(
@@ -252,6 +270,13 @@ class MonitorBox:
                 font=tkfont.Font(size=max(10, min(w, h) // 10), weight="bold"),
                 tags="mon",
             )
+            if self.data.get("_mirror"):
+                self.mirror_lbl = self.canvas.create_text(
+                    x + 10, y + 48, text=self.mirror_text(),
+                    fill=self.data.get("_mcolor") or COL_WARN, anchor="nw",
+                    font=tkfont.Font(size=max(8, min(w, h) // 18), weight="bold"),
+                    tags="mon",
+                )
             self.label = self.canvas.create_text(
                 x + w / 2, y + h / 2 - 12,
                 text=self.data["name"], fill=COL_TEXT,
@@ -260,7 +285,7 @@ class MonitorBox:
             )
             self.sub = self.canvas.create_text(
                 x + w / 2, y + h / 2 + max(10, min(w, h) // 12),
-                text=f"{self.data['w']}×{self.data['h']}",
+                text=self.sub_text(),
                 fill=COL_MUTED,
                 font=tkfont.Font(size=max(7, min(w, h) // 14)),
                 tags="mon",
@@ -314,13 +339,28 @@ class MonitorBox:
             )
         else:
             self.canvas.itemconfig(self.item, fill=fill)
-            self.canvas.itemconfig(
-                self.item, outline=COL_ACCENT_DIM if enabled else "#2a3040")
+            self.canvas.itemconfig(self.item, outline=self.outline_color(enabled))
             self.canvas.coords(self.item, x + 2, y + 2, x + w - 2, y + h - 2)
             self.canvas.coords(self.badge, x + 8, y + 8, x + 20, y + 20)
             self.canvas.itemconfig(self.badge, fill=self.dot_color())
             self.canvas.coords(self.num_label, x + 30, y + 26)
             self.canvas.itemconfig(self.num_label, text=str(self.num) if self.num else "")
+            if self.data.get("_mirror"):
+                text = self.mirror_text()
+                color = self.data.get("_mcolor") or COL_WARN
+                if self.mirror_lbl is None:
+                    self.mirror_lbl = self.canvas.create_text(
+                        x + 10, y + 48, text=text, fill=color, anchor="nw",
+                        font=tkfont.Font(size=max(8, min(w, h) // 18),
+                                         weight="bold"),
+                        tags="mon",
+                    )
+                else:
+                    self.canvas.coords(self.mirror_lbl, x + 10, y + 48)
+                    self.canvas.itemconfig(self.mirror_lbl, text=text, fill=color)
+            elif self.mirror_lbl is not None:
+                self.canvas.delete(self.mirror_lbl)
+                self.mirror_lbl = None
             self.canvas.coords(self.label, x + w / 2, y + h / 2 - 12)
             self.canvas.coords(self.sub, x + w / 2, y + h / 2 + max(10, min(w, h) // 12))
             self.canvas.coords(self.combo_win, x + w / 2, y + h - 32)
@@ -346,8 +386,7 @@ class MonitorBox:
             self.canvas.itemconfig(
                 self.pow_txt, text="on" if on else "off",
                 fill="#0d1017" if on else COL_BG)
-            self.canvas.itemconfig(self.sub,
-                                   text=f"{self.data['w']}×{self.data['h']}")
+            self.canvas.itemconfig(self.sub, text=self.sub_text())
             self.combo.set(ROTATION_LABELS[self.data.get("rotate", "normal")])
 
     def dot_color(self):
@@ -384,7 +423,11 @@ class App:
         self.root = root
         self.mons = monitors
         self.scale = 0.5
+        self.zoom = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
         self.drag = None
+        self.panning = None
         self.selected = None
 
         root.title("i3mon")
@@ -395,7 +438,8 @@ class App:
         header.pack(fill="x", padx=16, pady=(12, 4))
         tk.Label(header, text="i3mon", bg=COL_BG, fg=COL_TEXT,
                  font=tkfont.Font(size=13, weight="bold")).pack(side="left")
-        tk.Label(header, text="drag to position · click to select",
+        tk.Label(header, text="drag to position · click to select · "
+                              "scroll to zoom · drag empty space to pan",
                  bg=COL_BG, fg=COL_MUTED, font=tkfont.Font(size=9)
                  ).pack(side="right")
 
@@ -408,6 +452,14 @@ class App:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Button-3>", self.on_identify)
+        self.canvas.bind("<ButtonPress-2>", self.on_pan_press)
+        self.canvas.bind("<B2-Motion>", self.on_pan_drag)
+        self.canvas.bind("<ButtonRelease-2>", self.on_pan_release)
+        self.canvas.bind("<Button-4>", lambda e: self.zoom_by(1.15, e.x, e.y))
+        self.canvas.bind("<Button-5>", lambda e: self.zoom_by(1 / 1.15, e.x, e.y))
+        self.canvas.bind("<MouseWheel>",
+                         lambda e: self.zoom_by(1.15 if e.delta > 0 else 1 / 1.15,
+                                                e.x, e.y))
 
         bar = ttk.Frame(root, style="Bar.TFrame")
         bar.pack(fill="x", side="bottom", padx=12, pady=(2, 12))
@@ -421,6 +473,18 @@ class App:
         self.btn_redetect = ttk.Button(bar, text="Redetect",
                                        command=self.redetect)
         self.btn_redetect.pack(side="left", padx=4, pady=6)
+        self.btn_unmirror = ttk.Button(bar, text="Unmirror",
+                                       command=self.unmirror)
+        self.btn_unmirror.pack(side="left", padx=4, pady=6)
+        self.btn_zoom_out = ttk.Button(bar, text="−", width=3,
+                                       command=lambda: self.zoom_by(1 / 1.25))
+        self.btn_zoom_out.pack(side="left", padx=(4, 1), pady=6)
+        self.btn_zoom_fit = ttk.Button(bar, text="Fit",
+                                       command=self.zoom_fit)
+        self.btn_zoom_fit.pack(side="left", padx=1, pady=6)
+        self.btn_zoom_in = ttk.Button(bar, text="+", width=3,
+                                      command=lambda: self.zoom_by(1.25))
+        self.btn_zoom_in.pack(side="left", padx=(1, 4), pady=6)
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                    padx=8, pady=6)
         self.profile_var = tk.StringVar()
@@ -441,16 +505,42 @@ class App:
         hint.pack(side="right", padx=8, pady=6)
 
         self.boxes = []
+        self._assign_offsets()
         for m in monitors:
             self.boxes.append(MonitorBox(self.canvas, m, self.scale, app=self))
         self._reassign_nums()
 
         self.root.after(150, self.load_saved)
 
+    OVERLAP_FRAC = 0.06
+
+    def _assign_offsets(self):
+        groups = {}
+        for m in self.mons:
+            groups.setdefault((m["x"], m["y"]), []).append(m)
+        serial = 0
+        for grp in groups.values():
+            mirror = len(grp) > 1
+            if mirror:
+                serial += 1
+                color = MIRROR_COLORS[(serial - 1) % len(MIRROR_COLORS)]
+            else:
+                color = None
+            dx = max(1, int(grp[0]["w"] * self.OVERLAP_FRAC))
+            dy = max(1, int(grp[0]["h"] * self.OVERLAP_FRAC))
+            for i, m in enumerate(grp):
+                m["_mirror"] = mirror
+                m["_mcolor"] = color
+                m["_mgid"] = serial
+                m["_ox"] = i * dx
+                m["_oy"] = i * dy
+
     def _reassign_nums(self):
-        order = sorted(self.mons, key=lambda mm: (mm["x"], mm["y"]))
-        for box in self.boxes:
-            box.set_num(order.index(box.data) + 1)
+        order = sorted(self.boxes, key=lambda b: (
+            b.data["x"] + b.data.get("_ox", 0),
+            b.data["y"] + b.data.get("_oy", 0)))
+        for i, box in enumerate(order, 1):
+            box.set_num(i)
 
     def load_saved(self):
         if self.list_profiles():
@@ -477,15 +567,58 @@ class App:
         self.rescale()
         self.status.config(text=f"redetected: {len(self.mons)} monitors")
 
+    def unmirror(self):
+        targets = self.mons
+        if self.selected is not None and self.selected.data.get("_mirror"):
+            key = (self.selected.data["x"], self.selected.data["y"])
+            targets = [m for m in self.mons if (m["x"], m["y"]) == key]
+        groups = {}
+        for m in targets:
+            groups.setdefault((m["x"], m["y"]), []).append(m)
+        moved = 0
+        for grp in groups.values():
+            if len(grp) < 2:
+                continue
+            y = grp[0]["y"]
+            cursor = grp[0]["x"] + grp[0]["w"]
+            for m in grp[1:]:
+                cursor = self._free_x(cursor, y, m, grp)
+                m["x"], m["y"] = cursor, y
+                cursor += m["w"]
+            moved += len(grp)
+        if not moved:
+            self.status.config(text="no mirrored monitors")
+            return
+        self.status.config(text=f"unmirrored {moved} monitors")
+        self.rescale()
+
+    def _free_x(self, x, y, mon, grp):
+        while True:
+            conflict = None
+            for o in self.mons:
+                if o in grp:
+                    continue
+                if x < o["x"] + o["w"] and o["x"] < x + mon["w"] \
+                        and y < o["y"] + o["h"] and o["y"] < y + mon["h"]:
+                    if conflict is None or \
+                            o["x"] + o["w"] > conflict["x"] + conflict["w"]:
+                        conflict = o
+            if conflict is None:
+                return x
+            x = conflict["x"] + conflict["w"]
+
     def rescale(self):
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
         if cw < 10 or ch < 10:
             return
-        total_w = max(m["x"] + m["w"] for m in self.mons)
-        total_h = max(m["y"] + m["h"] for m in self.mons)
-        self.scale = min((cw - 20) / total_w, (ch - 20) / total_h)
+        self._assign_offsets()
+        total_w = max(m["x"] + m["w"] + m.get("_ox", 0) for m in self.mons)
+        total_h = max(m["y"] + m["h"] + m.get("_oy", 0) for m in self.mons)
+        self.scale = min((cw - 20) / total_w, (ch - 20) / total_h) * self.zoom
         self.canvas.delete("mon")
+        self.selected = None
+        self.drag = None
         self.boxes = []
         for m in self.mons:
             self.boxes.append(MonitorBox(self.canvas, m, self.scale, app=self))
@@ -496,7 +629,8 @@ class App:
         for box in self.boxes:
             w, h = box.size()
             bx, by = box.pos()
-            bx, by = bx * self.scale, by * self.scale
+            bx = bx * self.scale + self.pan_x
+            by = by * self.scale + self.pan_y
             if bx <= x <= bx + w and by <= y <= by + h:
                 return box
         return None
@@ -517,21 +651,37 @@ class App:
                         return
         box = self.find_box(event)
         if box:
-            self.drag = (box, event.x - box.pos()[0] * self.scale,
-                         event.y - box.pos()[1] * self.scale)
+            px, py = box.pos()
+            self.drag = (box,
+                         (event.x - self.pan_x) / self.scale - px,
+                         (event.y - self.pan_y) / self.scale - py)
             if self.selected:
                 self.selected.data["selected"] = False
                 self.selected.draw()
             self.selected = box
             box.data["selected"] = True
             box.draw()
+        else:
+            self.panning = (event.x, event.y, self.pan_x, self.pan_y)
+            self.canvas.config(cursor="fleur")
 
     def on_drag(self, event):
+        if self.panning:
+            self.on_pan_drag(event)
+            return
         if not self.drag:
             return
         box, offx, offy = self.drag
-        nx = (event.x - offx) / self.scale
-        ny = (event.y - offy) / self.scale
+        if box.data.get("_ox") or box.data.get("_oy"):
+            box.data["x"] += box.data["_ox"]
+            box.data["y"] += box.data["_oy"]
+            box.data["_ox"] = 0
+            box.data["_oy"] = 0
+        box.data["_mirror"] = False
+        box.data["_mcolor"] = None
+        box.data["_mgid"] = 0
+        nx = (event.x - self.pan_x) / self.scale - offx
+        ny = (event.y - self.pan_y) / self.scale - offy
         box.data["x"], box.data["y"] = self.snap(box, int(max(0, nx)), int(max(0, ny)))
         box.draw()
 
@@ -557,12 +707,59 @@ class App:
         return x, y
 
     def on_release(self, _):
+        self.panning = None
+        self.canvas.config(cursor="")
         self.drag = None
+        self._assign_offsets()
+        for box in self.boxes:
+            box.draw()
         self._reassign_nums()
 
+    def on_pan_press(self, event):
+        self.panning = (event.x, event.y, self.pan_x, self.pan_y)
+        self.canvas.config(cursor="fleur")
+
+    def on_pan_drag(self, event):
+        if not self.panning:
+            return
+        sx, sy, ox, oy = self.panning
+        self.pan_x = ox + (event.x - sx)
+        self.pan_y = oy + (event.y - sy)
+        for box in self.boxes:
+            box.draw()
+
+    def on_pan_release(self, _):
+        self.panning = None
+        self.canvas.config(cursor="")
+
+    def zoom_by(self, factor, ax=None, ay=None):
+        old = self.zoom
+        new = max(0.1, min(8.0, old * factor))
+        if new == old:
+            return
+        if ax is None:
+            ax = self.canvas.winfo_width() / 2
+        if ay is None:
+            ay = self.canvas.winfo_height() / 2
+        self.pan_x = ax - (ax - self.pan_x) * (new / old)
+        self.pan_y = ay - (ay - self.pan_y) * (new / old)
+        self.zoom = new
+        self.rescale()
+
+    def zoom_fit(self):
+        self.zoom = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.rescale()
+
     def pos_num(self, m):
-        order = sorted(self.mons, key=lambda mm: (mm["x"], mm["y"]))
-        return order.index(m) + 1
+        order = sorted(self.boxes, key=lambda b: (
+            b.data["x"] + b.data.get("_ox", 0),
+            b.data["y"] + b.data.get("_oy", 0)))
+        for i, box in enumerate(order, 1):
+            if box.data is m:
+                return i
+        return 0
 
     def on_identify(self, event):
         box = self.find_box(event)
